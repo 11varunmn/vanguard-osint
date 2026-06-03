@@ -1,0 +1,91 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL ─────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: vanguard_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vanguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vanguard_dev_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-vanguard_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vanguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Neo4j Graph Database ────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: vanguard_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-vanguard_neo4j_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474"   # Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7474"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ─── FastAPI Backend ─────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vanguard_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vanguard}:${POSTGRES_PASSWORD:-vanguard_dev_pass}@postgres:5432/${POSTGRES_DB:-vanguard_db}
+      NEO4J_URI: bolt://neo4j:7687
+      EVIDENCE_VAULT_PATH: /app/evidence
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - evidence_vault:/app/evidence
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ─── React Frontend ──────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vanguard_frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  evidence_vault:
